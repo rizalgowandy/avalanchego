@@ -1,4 +1,4 @@
-// Copyright (C) 2019-2021, Ava Labs, Inc. All rights reserved.
+// Copyright (C) 2019-2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 package grpcutils
@@ -6,25 +6,19 @@ package grpcutils
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
+	httppb "github.com/ava-labs/avalanchego/proto/pb/http"
 	spb "google.golang.org/genproto/googleapis/rpc/status"
-
-	"github.com/ava-labs/avalanchego/api/proto/ghttpproto"
+	tspb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func Errorf(code int, tmpl string, args ...interface{}) error {
-	return GetGRPCErrorFromHTTPResponse(&ghttpproto.HandleSimpleHTTPResponse{
-		Code: int32(code),
-		Body: []byte(fmt.Sprintf(tmpl, args...)),
-	})
-}
-
-// GetGRPCErrorFromHTTPRespone takes an HandleSimpleHTTPResponse as input and returns a gRPC error.
-func GetGRPCErrorFromHTTPResponse(resp *ghttpproto.HandleSimpleHTTPResponse) error {
+// GetGRPCErrorFromHTTPResponse takes an HandleSimpleHTTPResponse as input and returns a gRPC error.
+func GetGRPCErrorFromHTTPResponse(resp *httppb.HandleSimpleHTTPResponse) error {
 	a, err := anypb.New(resp)
 	if err != nil {
 		return err
@@ -39,7 +33,7 @@ func GetGRPCErrorFromHTTPResponse(resp *ghttpproto.HandleSimpleHTTPResponse) err
 
 // GetHTTPResponseFromError takes an gRPC error as input and returns a gRPC
 // HandleSimpleHTTPResponse.
-func GetHTTPResponseFromError(err error) (*ghttpproto.HandleSimpleHTTPResponse, bool) {
+func GetHTTPResponseFromError(err error) (*httppb.HandleSimpleHTTPResponse, bool) {
 	s, ok := status.FromError(err)
 	if !ok {
 		return nil, false
@@ -50,7 +44,7 @@ func GetHTTPResponseFromError(err error) (*ghttpproto.HandleSimpleHTTPResponse, 
 		return nil, false
 	}
 
-	var resp ghttpproto.HandleSimpleHTTPResponse
+	var resp httppb.HandleSimpleHTTPResponse
 	if err := anypb.UnmarshalTo(status.Details[0], &resp, proto.UnmarshalOptions{}); err != nil {
 		return nil, false
 	}
@@ -59,10 +53,10 @@ func GetHTTPResponseFromError(err error) (*ghttpproto.HandleSimpleHTTPResponse, 
 }
 
 // GetHTTPHeader takes an http.Header as input and returns a slice of Header.
-func GetHTTPHeader(hs http.Header) []*ghttpproto.Element {
-	result := make([]*ghttpproto.Element, 0, len(hs))
+func GetHTTPHeader(hs http.Header) []*httppb.Element {
+	result := make([]*httppb.Element, 0, len(hs))
 	for k, vs := range hs {
-		result = append(result, &ghttpproto.Element{
+		result = append(result, &httppb.Element{
 			Key:    k,
 			Values: vs,
 		})
@@ -71,8 +65,31 @@ func GetHTTPHeader(hs http.Header) []*ghttpproto.Element {
 }
 
 // MergeHTTPHeader takes a slice of Header and merges with http.Header map.
-func MergeHTTPHeader(hs []*ghttpproto.Element, header http.Header) {
+func MergeHTTPHeader(hs []*httppb.Element, header http.Header) {
 	for _, h := range hs {
 		header[h.Key] = h.Values
 	}
+}
+
+// TimestampAsTime validates timestamppb timestamp and returns time.Time.
+func TimestampAsTime(ts *tspb.Timestamp) (time.Time, error) {
+	if err := ts.CheckValid(); err != nil {
+		return time.Time{}, fmt.Errorf("invalid timestamp: %w", err)
+	}
+	return ts.AsTime(), nil
+}
+
+// TimestampFromTime converts time.Time to a timestamppb timestamp.
+func TimestampFromTime(time time.Time) *tspb.Timestamp {
+	return tspb.New(time)
+}
+
+// EnsureValidResponseCode ensures that the response code is valid otherwise it returns 500.
+func EnsureValidResponseCode(code int) int {
+	// Response code outside of this range is invalid and could panic.
+	// ref. https://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html
+	if code < 100 || code > 599 {
+		return http.StatusInternalServerError
+	}
+	return code
 }

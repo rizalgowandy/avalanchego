@@ -1,45 +1,60 @@
-// Copyright (C) 2019-2021, Ava Labs, Inc. All rights reserved.
+// Copyright (C) 2019-2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 package state
 
 import (
+	"go.uber.org/zap"
+
 	"github.com/ava-labs/avalanchego/cache"
 	"github.com/ava-labs/avalanchego/database"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/choices"
 	"github.com/ava-labs/avalanchego/snow/engine/avalanche/vertex"
-	"github.com/ava-labs/avalanchego/utils/formatting"
-	"github.com/ava-labs/avalanchego/utils/hashing"
+	"github.com/ava-labs/avalanchego/utils/logging"
 	"github.com/ava-labs/avalanchego/utils/wrappers"
 )
 
 type state struct {
 	serializer *Serializer
+	log        logging.Logger
 
-	dbCache cache.Cacher
+	dbCache cache.Cacher[ids.ID, any]
 	db      database.Database
 }
 
+// Vertex retrieves the vertex with the given id from cache/disk.
+// Returns nil if it's not found.
+// TODO this should return an error
 func (s *state) Vertex(id ids.ID) vertex.StatelessVertex {
 	if vtxIntf, found := s.dbCache.Get(id); found {
 		vtx, _ := vtxIntf.(vertex.StatelessVertex)
 		return vtx
 	}
 
-	if b, err := s.db.Get(id[:]); err == nil {
-		// The key was in the database
-		if vtx, err := s.serializer.parseVertex(b); err == nil {
-			s.dbCache.Put(id, vtx) // Cache the element
-			return vtx
-		}
-		s.serializer.ctx.Log.Error("Parsing failed on saved vertex.\nPrefixed key = %s\nBytes = %s",
-			id,
-			formatting.DumpBytes(b))
+	bytes, err := s.db.Get(id[:])
+	if err != nil {
+		s.log.Verbo("failed to get vertex from database",
+			zap.Binary("key", id[:]),
+			zap.Error(err),
+		)
+		s.dbCache.Put(id, nil)
+		return nil
 	}
 
-	s.dbCache.Put(id, nil) // Cache the miss
-	return nil
+	vtx, err := s.serializer.parseVertex(bytes)
+	if err != nil {
+		s.log.Error("failed parsing saved vertex",
+			zap.Binary("key", id[:]),
+			zap.Binary("vertex", bytes),
+			zap.Error(err),
+		)
+		s.dbCache.Put(id, nil)
+		return nil
+	}
+
+	s.dbCache.Put(id, vtx)
+	return vtx
 }
 
 // SetVertex persists the vertex to the database and returns an error if it
@@ -93,7 +108,7 @@ func (s *state) Edge(id ids.ID) []ids.ID {
 		frontierSize := p.UnpackInt()
 		frontier := make([]ids.ID, frontierSize)
 		for i := 0; i < int(frontierSize) && !p.Errored(); i++ {
-			id, err := ids.ToID(p.UnpackFixedBytes(hashing.HashLen))
+			id, err := ids.ToID(p.UnpackFixedBytes(ids.IDLen))
 			p.Add(err)
 			frontier[i] = id
 		}
@@ -102,9 +117,11 @@ func (s *state) Edge(id ids.ID) []ids.ID {
 			s.dbCache.Put(id, frontier)
 			return frontier
 		}
-		s.serializer.ctx.Log.Error("Parsing failed on saved ids.\nPrefixed key = %s\nBytes = %s",
-			id,
-			formatting.DumpBytes(b))
+		s.log.Error("failed parsing saved edge",
+			zap.Binary("key", id[:]),
+			zap.Binary("edge", b),
+			zap.Error(err),
+		)
 	}
 
 	s.dbCache.Put(id, nil) // Cache the miss
@@ -119,16 +136,12 @@ func (s *state) SetEdge(id ids.ID, frontier []ids.ID) error {
 		return s.db.Delete(id[:])
 	}
 
-	size := wrappers.IntLen + hashing.HashLen*len(frontier)
+	size := wrappers.IntLen + ids.IDLen*len(frontier)
 	p := wrappers.Packer{Bytes: make([]byte, size)}
-
 	p.PackInt(uint32(len(frontier)))
 	for _, id := range frontier {
 		p.PackFixedBytes(id[:])
 	}
-
-	s.serializer.ctx.Log.AssertNoError(p.Err)
-	s.serializer.ctx.Log.AssertTrue(p.Offset == len(p.Bytes), "Wrong offset after packing")
 
 	return s.db.Put(id[:], p.Bytes)
 }
