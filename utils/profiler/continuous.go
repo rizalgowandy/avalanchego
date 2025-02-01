@@ -1,15 +1,15 @@
-// Copyright (C) 2019-2021, Ava Labs, Inc. All rights reserved.
+// Copyright (C) 2019-2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 package profiler
 
 import (
-	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/ava-labs/avalanchego/utils/filesystem"
 )
 
 // Config that is used to describe the options of the continuous profiler.
@@ -37,7 +37,7 @@ type continuousProfiler struct {
 
 func NewContinuous(dir string, freq time.Duration, maxNumFiles int) ContinuousProfiler {
 	return &continuousProfiler{
-		profiler:    new(dir),
+		profiler:    newProfiler(dir),
 		freq:        freq,
 		maxNumFiles: maxNumFiles,
 		closer:      make(chan struct{}),
@@ -82,9 +82,15 @@ func (p *continuousProfiler) stop() error {
 
 func (p *continuousProfiler) rotate() error {
 	g := errgroup.Group{}
-	g.Go(func() error { return rotate(p.profiler.cpuProfileName, p.maxNumFiles) })
-	g.Go(func() error { return rotate(p.profiler.memProfileName, p.maxNumFiles) })
-	g.Go(func() error { return rotate(p.profiler.lockProfileName, p.maxNumFiles) })
+	g.Go(func() error {
+		return rotate(p.profiler.cpuProfileName, p.maxNumFiles)
+	})
+	g.Go(func() error {
+		return rotate(p.profiler.memProfileName, p.maxNumFiles)
+	})
+	g.Go(func() error {
+		return rotate(p.profiler.lockProfileName, p.maxNumFiles)
+	})
 	return g.Wait()
 }
 
@@ -97,19 +103,12 @@ func (p *continuousProfiler) Shutdown() {
 func rotate(name string, maxNumFiles int) error {
 	for i := maxNumFiles - 1; i > 0; i-- {
 		sourceFilename := fmt.Sprintf("%s.%d", name, i)
-		_, err := os.Stat(sourceFilename)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-
 		destFilename := fmt.Sprintf("%s.%d", name, i+1)
-		if err := os.Rename(sourceFilename, destFilename); err != nil {
+		if _, err := filesystem.RenameIfExists(sourceFilename, destFilename); err != nil {
 			return err
 		}
 	}
-	destFilename := fmt.Sprintf("%s.1", name)
-	return os.Rename(name, destFilename)
+	destFilename := name + ".1"
+	_, err := filesystem.RenameIfExists(name, destFilename)
+	return err
 }

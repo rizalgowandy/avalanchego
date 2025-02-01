@@ -1,11 +1,13 @@
-// Copyright (C) 2019-2021, Ava Labs, Inc. All rights reserved.
+// Copyright (C) 2019-2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 package wrappers
 
 type Errs struct{ Err error }
 
-func (errs *Errs) Errored() bool { return errs.Err != nil }
+func (errs *Errs) Errored() bool {
+	return errs.Err != nil
+}
 
 func (errs *Errs) Add(errors ...error) {
 	if errs.Err == nil {
