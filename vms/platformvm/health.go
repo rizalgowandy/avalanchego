@@ -1,33 +1,44 @@
-// Copyright (C) 2019-2021, Ava Labs, Inc. All rights reserved.
+// Copyright (C) 2019-2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 package platformvm
 
 import (
+	"context"
 	"fmt"
+	"time"
+
+	"github.com/ava-labs/avalanchego/database"
+	"github.com/ava-labs/avalanchego/utils/constants"
 )
 
-// MinConnectedStake is the minimum percentage of the Primary Network's that
-// this node must be connected to to be considered healthy
-const MinConnectedStake = .80
-
-func (vm *VM) HealthCheck() (interface{}, error) {
-	// Returns nil if this node is connected to > alpha percent of the Primary Network's stake
-	percentConnected, err := vm.getPercentConnected()
-	if err != nil {
-		return nil, fmt.Errorf("couldn't get percent connected: %w", err)
+func (vm *VM) HealthCheck(context.Context) (interface{}, error) {
+	localPrimaryValidator, err := vm.state.GetCurrentValidator(
+		constants.PrimaryNetworkID,
+		vm.ctx.NodeID,
+	)
+	switch err {
+	case nil:
+		vm.metrics.SetTimeUntilUnstake(time.Until(localPrimaryValidator.EndTime))
+	case database.ErrNotFound:
+		vm.metrics.SetTimeUntilUnstake(0)
+	default:
+		return nil, fmt.Errorf("couldn't get current local validator: %w", err)
 	}
 
-	vm.metrics.percentConnected.Set(percentConnected)
-
-	details := map[string]float64{
-		"percentConnected": percentConnected,
-	}
-	if percentConnected < MinConnectedStake { // Use alpha from consensus instead of const
-		return details, fmt.Errorf("connected to %f%% of the stake; should be connected to at least %f%%",
-			percentConnected*100,
-			MinConnectedStake*100,
+	for subnetID := range vm.TrackedSubnets {
+		localSubnetValidator, err := vm.state.GetCurrentValidator(
+			subnetID,
+			vm.ctx.NodeID,
 		)
+		switch err {
+		case nil:
+			vm.metrics.SetTimeUntilSubnetUnstake(subnetID, time.Until(localSubnetValidator.EndTime))
+		case database.ErrNotFound:
+			vm.metrics.SetTimeUntilSubnetUnstake(subnetID, 0)
+		default:
+			return nil, fmt.Errorf("couldn't get current subnet validator of %q: %w", subnetID, err)
+		}
 	}
-	return details, nil
+	return nil, nil
 }
